@@ -122,7 +122,11 @@ pub struct Daemon<P: Program> {
 
 impl<P: Program> Daemon<P> {
     /// Runs the [`Daemon`].
-    pub fn run(self) -> Result
+    pub fn run(
+        self,
+        #[cfg(target_os = "android")]
+        android_app: iced_winit::winit::platform::android::activity::AndroidApp,
+    ) -> Result
     where
         Self: 'static,
         P::Message: message::MaybeDebug + message::MaybeClone,
@@ -143,7 +147,11 @@ impl<P: Program> Daemon<P> {
         #[cfg(not(any(feature = "tester", feature = "debug")))]
         let program = self;
 
-        Ok(shell::run(program)?)
+        Ok(shell::run(
+            program,
+            #[cfg(target_os = "android")]
+            android_app,
+        )?)
     }
 
     /// Sets the [`Settings`] that will be used to run the [`Daemon`].

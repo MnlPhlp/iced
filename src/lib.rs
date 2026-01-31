@@ -483,6 +483,8 @@ use iced_winit::runtime;
 
 pub use iced_futures::futures;
 pub use iced_futures::stream;
+#[cfg(target_os = "android")]
+pub use iced_winit::winit::platform::android::activity::AndroidApp;
 
 #[cfg(not(any(
     target_arch = "wasm32",
@@ -699,6 +701,8 @@ pub type Result = std::result::Result<(), Error>;
 pub fn run<State, Message, Theme, Renderer>(
     update: impl application::UpdateFn<State, Message> + 'static,
     view: impl for<'a> application::ViewFn<'a, State, Message, Theme, Renderer> + 'static,
+    #[cfg(target_os = "android")]
+    android_app: iced_winit::winit::platform::android::activity::AndroidApp,
 ) -> Result
 where
     State: Default + 'static,
@@ -706,5 +710,8 @@ where
     Theme: theme::Base + 'static,
     Renderer: program::Renderer + 'static,
 {
-    application(State::default, update, view).run()
+    application(State::default, update, view).run(
+        #[cfg(target_os = "android")]
+        android_app,
+    )
 }

@@ -36,6 +36,7 @@ mod window;
 pub use clipboard::Clipboard;
 pub use error::Error;
 pub use proxy::Proxy;
+use winit::event_loop::OwnedDisplayHandle;
 
 use crate::core::mouse;
 use crate::core::renderer;
@@ -64,8 +65,14 @@ use std::mem::ManuallyDrop;
 use std::slice;
 use std::sync::Arc;
 
+#[cfg(target_os = "android")]
+use winit::platform::android::EventLoopBuilderExtAndroid;
+
 /// Runs a [`Program`] with the provided settings.
-pub fn run<P>(program: P) -> Result<(), Error>
+pub fn run<P>(
+    program: P,
+    #[cfg(target_os = "android")] android_app: winit::platform::android::activity::AndroidApp,
+) -> Result<(), Error>
 where
     P: Program + 'static,
     P::Theme: theme::Base,
@@ -76,9 +83,10 @@ where
     let settings = program.settings();
     let window_settings = program.window();
 
-    let event_loop = EventLoop::with_user_event()
-        .build()
-        .expect("Create event loop");
+    let mut event_loop = EventLoop::with_user_event();
+    #[cfg(target_os = "android")]
+    let _ = event_loop.with_android_app(android_app);
+    let event_loop = event_loop.build().expect("Create event loop");
 
     let graphics_settings = settings.clone().into();
     let display_handle = event_loop.owned_display_handle();
@@ -125,6 +133,7 @@ where
     let (event_sender, event_receiver) = mpsc::unbounded();
     let (control_sender, control_receiver) = mpsc::unbounded();
     let (system_theme_sender, system_theme_receiver) = oneshot::channel();
+    let (display_handle_sender, display_handle_receiver) = oneshot::channel();
 
     let instance = Box::pin(run_instance::<P>(
         program,
@@ -132,11 +141,11 @@ where
         proxy.clone(),
         event_receiver,
         control_sender,
-        display_handle,
         is_daemon,
         graphics_settings,
         settings.fonts,
         system_theme_receiver,
+        display_handle_receiver,
     ));
 
     let context = task::Context::from_waker(task::noop_waker_ref());
@@ -149,6 +158,7 @@ where
         receiver: mpsc::UnboundedReceiver<Control>,
         error: Option<Error>,
         system_theme: Option<oneshot::Sender<theme::Mode>>,
+        display_handle: Option<oneshot::Sender<OwnedDisplayHandle>>,
 
         #[cfg(target_arch = "wasm32")]
         canvas: Option<web_sys::HtmlCanvasElement>,
@@ -162,6 +172,7 @@ where
         receiver: control_receiver,
         error: None,
         system_theme: Some(system_theme_sender),
+        display_handle: Some(display_handle_sender),
 
         #[cfg(target_arch = "wasm32")]
         canvas: None,
@@ -174,6 +185,11 @@ where
         F: Future<Output = ()>,
     {
         fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+            if let Some(dh_send) = self.display_handle.take() {
+                dh_send
+                    .send(event_loop.owned_display_handle())
+                    .expect("Send display handle");
+            }
             if let Some(sender) = self.system_theme.take() {
                 let _ = sender.send(
                     event_loop
@@ -471,11 +487,11 @@ async fn run_instance<P>(
     mut proxy: Proxy<P::Message>,
     mut event_receiver: mpsc::UnboundedReceiver<Event<Action<P::Message>>>,
     mut control_sender: mpsc::UnboundedSender<Control>,
-    display_handle: winit::event_loop::OwnedDisplayHandle,
     is_daemon: bool,
     graphics_settings: graphics::Settings,
     default_fonts: Vec<Cow<'static, [u8]>>,
     mut _system_theme: oneshot::Receiver<theme::Mode>,
+    display_handle: oneshot::Receiver<OwnedDisplayHandle>,
 ) where
     P: Program + 'static,
     P::Theme: theme::Base,
@@ -494,6 +510,8 @@ async fn run_instance<P>(
     let mut ui_caches = FxHashMap::default();
     let mut user_interfaces = ManuallyDrop::new(FxHashMap::default());
     let mut clipboard = Clipboard::unconnected();
+
+    let display_handle = display_handle.await.expect("Receive display handle");
 
     #[cfg(all(feature = "linux-theme-detection", target_os = "linux"))]
     let mut system_theme = {
@@ -554,9 +572,9 @@ async fn run_instance<P>(
 
                     let create_compositor = {
                         let window = window.clone();
-                        let display_handle = display_handle.clone();
                         let proxy = proxy.clone();
                         let default_fonts = default_fonts.clone();
+                        let display_handle = display_handle.clone();
 
                         async move {
                             let shell = Shell::new(proxy.clone());

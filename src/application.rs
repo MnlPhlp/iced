@@ -178,7 +178,11 @@ pub struct Application<P: Program> {
 
 impl<P: Program> Application<P> {
     /// Runs the [`Application`].
-    pub fn run(self) -> Result
+    pub fn run(
+        self,
+        #[cfg(target_os = "android")]
+        android_app: iced_winit::winit::platform::android::activity::AndroidApp,
+    ) -> Result
     where
         Self: 'static,
         P::Message: message::MaybeDebug + message::MaybeClone,
@@ -206,7 +210,11 @@ impl<P: Program> Application<P> {
         )))]
         let program = self;
 
-        Ok(shell::run(program)?)
+        Ok(shell::run(
+            program,
+            #[cfg(target_os = "android")]
+            android_app,
+        )?)
     }
 
     /// Sets the [`Settings`] that will be used to run the [`Application`].
