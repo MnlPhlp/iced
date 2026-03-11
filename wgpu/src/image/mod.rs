@@ -136,8 +136,6 @@ impl Pipeline {
                         7 => Float32x2,
                         // Layer
                         8 => Sint32,
-                        // Snap
-                        9 => Uint32,
                     ),
                 }],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -233,6 +231,13 @@ impl State {
                     bounds,
                     clip_bounds,
                 } => {
+                    let bounds = (*bounds * scale).round();
+                    let clip_bounds = (*clip_bounds * scale).round();
+
+                    if bounds.width < 1.0 || bounds.height < 1.0 {
+                        return;
+                    }
+
                     if let Some((atlas_entry, bind_group)) =
                         cache.upload_raster(device, encoder, belt, &image.handle)
                     {
@@ -249,12 +254,11 @@ impl State {
                         }
 
                         add_instances(
-                            *bounds,
-                            *clip_bounds,
-                            image.border_radius,
+                            bounds,
+                            clip_bounds,
+                            image.border_radius * scale,
                             f32::from(image.rotation),
                             image.opacity,
-                            image.snap,
                             atlas_entry,
                             match image.filter_method {
                                 crate::core::image::FilterMethod::Nearest => {
@@ -276,14 +280,20 @@ impl State {
                     bounds,
                     clip_bounds,
                 } => {
+                    let bounds = (*bounds * scale).round();
+                    let clip_bounds = (*clip_bounds * scale).round();
+
+                    if bounds.width < 1.0 || bounds.height < 1.0 {
+                        return;
+                    }
+
                     if let Some((atlas_entry, bind_group)) = cache.upload_vector(
                         device,
                         encoder,
                         belt,
                         &svg.handle,
                         svg.color,
-                        bounds.size(),
-                        scale,
+                        Size::new(bounds.width as u32, bounds.height as u32),
                     ) {
                         match atlas.as_mut() {
                             None => {
@@ -298,12 +308,11 @@ impl State {
                         }
 
                         add_instances(
-                            *bounds,
-                            *clip_bounds,
+                            bounds,
+                            clip_bounds,
                             border::radius(0),
                             f32::from(svg.rotation),
                             svg.opacity,
-                            true,
                             atlas_entry,
                             &mut self.nearest_instances,
                         );
@@ -323,7 +332,6 @@ impl State {
             encoder,
             belt,
             transformation,
-            scale,
             &self.nearest_instances,
             &self.linear_instances,
         );
@@ -453,14 +461,11 @@ impl Layer {
         encoder: &mut wgpu::CommandEncoder,
         belt: &mut wgpu::util::StagingBelt,
         transformation: Transformation,
-        scale_factor: f32,
         nearest: &[Instance],
         linear: &[Instance],
     ) {
         let uniforms = Uniforms {
             transform: transformation.into(),
-            scale_factor,
-            _padding: [0.0; 3],
         };
 
         let bytes = bytemuck::bytes_of(&uniforms);
@@ -561,7 +566,6 @@ struct Instance {
     _position_in_atlas: [f32; 2],
     _size_in_atlas: [f32; 2],
     _layer: u32,
-    _snap: u32,
 }
 
 impl Instance {
@@ -572,10 +576,6 @@ impl Instance {
 #[derive(Debug, Clone, Copy, Zeroable, Pod)]
 struct Uniforms {
     transform: [f32; 16],
-    scale_factor: f32,
-    // Uniforms must be aligned to their largest member,
-    // this uses a mat4x4<f32> which aligns to 16, so align to that
-    _padding: [f32; 3],
 }
 
 fn add_instances(
@@ -584,7 +584,6 @@ fn add_instances(
     border_radius: border::Radius,
     rotation: f32,
     opacity: f32,
-    snap: bool,
     entry: &atlas::Entry,
     instances: &mut Vec<Instance>,
 ) {
@@ -611,7 +610,6 @@ fn add_instances(
                 [bounds.x, bounds.y, bounds.width, bounds.height],
                 rotation,
                 opacity,
-                snap,
                 allocation,
                 instances,
             );
@@ -643,7 +641,6 @@ fn add_instances(
                     tile,
                     rotation,
                     opacity,
-                    snap,
                     allocation,
                     instances,
                 );
@@ -660,7 +657,6 @@ fn add_instance(
     tile: [f32; 4],
     rotation: f32,
     opacity: f32,
-    snap: bool,
     allocation: &atlas::Allocation,
     instances: &mut Vec<Instance>,
 ) {
@@ -682,7 +678,6 @@ fn add_instance(
             height as f32 / atlas_size as f32,
         ],
         _layer: layer as u32,
-        _snap: snap as u32,
     };
 
     instances.push(instance);
