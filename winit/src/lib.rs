@@ -66,7 +66,23 @@ use std::slice;
 use std::sync::Arc;
 
 #[cfg(target_os = "android")]
-use winit::platform::android::EventLoopBuilderExtAndroid;
+use winit::platform::android::{ActiveEventLoopExtAndroid, EventLoopBuilderExtAndroid};
+
+#[cfg(any(test, target_os = "android"))]
+fn android_ui_mode_night_to_theme_mode(ui_mode_night: i32) -> theme::Mode {
+    match ui_mode_night {
+        // ACONFIGURATION_UI_MODE_NIGHT_NO
+        1 => theme::Mode::Light,
+        // ACONFIGURATION_UI_MODE_NIGHT_YES
+        2 => theme::Mode::Dark,
+        _ => theme::Mode::None,
+    }
+}
+
+#[cfg(target_os = "android")]
+fn android_system_theme(app: &winit::platform::android::activity::AndroidApp) -> theme::Mode {
+    android_ui_mode_night_to_theme_mode(app.config().ui_mode_night().into())
+}
 
 /// Runs a [`Program`] with the provided settings.
 pub fn run<P>(
@@ -85,11 +101,10 @@ where
 
     let mut event_loop = EventLoop::with_user_event();
     #[cfg(target_os = "android")]
-    let _ = event_loop.with_android_app(android_app);
+    let _ = event_loop.with_android_app(android_app.clone());
     let event_loop = event_loop.build().expect("Create event loop");
 
     let graphics_settings = settings.clone().into();
-    let display_handle = event_loop.owned_display_handle();
 
     let (proxy, worker) = Proxy::new(event_loop.create_proxy());
 
@@ -160,6 +175,9 @@ where
         system_theme: Option<oneshot::Sender<theme::Mode>>,
         display_handle: Option<oneshot::Sender<OwnedDisplayHandle>>,
 
+        #[cfg(target_os = "android")]
+        android_system_theme: theme::Mode,
+
         #[cfg(target_arch = "wasm32")]
         canvas: Option<web_sys::HtmlCanvasElement>,
     }
@@ -173,6 +191,9 @@ where
         error: None,
         system_theme: Some(system_theme_sender),
         display_handle: Some(display_handle_sender),
+
+        #[cfg(target_os = "android")]
+        android_system_theme: theme::Mode::None,
 
         #[cfg(target_arch = "wasm32")]
         canvas: None,
@@ -189,14 +210,6 @@ where
                 dh_send
                     .send(event_loop.owned_display_handle())
                     .expect("Send display handle");
-            }
-            if let Some(sender) = self.system_theme.take() {
-                let _ = sender.send(
-                    event_loop
-                        .system_theme()
-                        .map(conversion::theme_mode)
-                        .unwrap_or_default(),
-                );
             }
         }
 
@@ -282,6 +295,20 @@ where
         ) {
             if event_loop.exiting() {
                 return;
+            }
+            #[cfg(target_os = "android")]
+            {
+                // TODO: fix equality check to not always set this. Hacky because some initial event to
+                // early breaks this and the theme does not chante
+                let system_theme = android_system_theme(event_loop.android_app());
+                // if system_theme != self.android_system_theme {
+                self.android_system_theme = system_theme;
+                self.sender
+                    .start_send(Event::EventLoopAwakened(winit::event::Event::UserEvent(
+                        Action::System(system::Action::NotifyTheme(system_theme)),
+                    )))
+                    .expect("Send system theme event");
+                // }
             }
 
             self.sender.start_send(event).expect("Send event");
@@ -449,6 +476,20 @@ where
         let _ = event_loop.spawn_app(runner);
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::android_ui_mode_night_to_theme_mode;
+    use crate::core::theme;
+
+    #[test]
+    fn android_ui_mode_night_to_theme_mode_handles_known_values() {
+        assert_eq!(android_ui_mode_night_to_theme_mode(0), theme::Mode::None);
+        assert_eq!(android_ui_mode_night_to_theme_mode(1), theme::Mode::Light);
+        assert_eq!(android_ui_mode_night_to_theme_mode(2), theme::Mode::Dark);
+        assert_eq!(android_ui_mode_night_to_theme_mode(42), theme::Mode::None);
     }
 }
 
