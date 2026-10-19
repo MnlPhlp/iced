@@ -66,6 +66,9 @@ use std::mem::ManuallyDrop;
 use std::slice;
 use std::sync::Arc;
 
+/// Consecutive timed-out frame acquisitions after which the surface is reconfigured.
+const SURFACE_TIMEOUTS_BEFORE_RECONFIGURE: u32 = 2;
+
 /// Runs a [`Program`] with the provided settings.
 pub fn run<P>(program: P) -> Result<(), Error>
 where
@@ -949,6 +952,8 @@ async fn run_instance<P>(
                         ) {
                             Ok(()) => {
                                 present_span.finish();
+
+                                window.surface_timeouts = 0;
                             }
                             Err(error) => match error {
                                 compositor::SurfaceError::OutOfMemory => {
@@ -962,6 +967,29 @@ async fn run_instance<P>(
                                 }
                                 compositor::SurfaceError::Timeout => {
                                     present_span.finish();
+
+                                    window.surface_timeouts += 1;
+
+                                    // A compositor that never releases the swapchain's
+                                    // buffers (seen with Wayland explicit sync) times out
+                                    // every acquire forever; a new swapchain recovers.
+                                    if window.surface_timeouts
+                                        >= SURFACE_TIMEOUTS_BEFORE_RECONFIGURE
+                                    {
+                                        window.surface_timeouts = 0;
+
+                                        log::warn!(
+                                            "Timed out acquiring a frame {SURFACE_TIMEOUTS_BEFORE_RECONFIGURE} times in a row. Reconfiguring the surface."
+                                        );
+
+                                        let physical_size = window.state.physical_size();
+
+                                        current_compositor.configure_surface(
+                                            &mut window.surface,
+                                            physical_size.width,
+                                            physical_size.height,
+                                        );
+                                    }
 
                                     window.raw.request_redraw();
                                 }
