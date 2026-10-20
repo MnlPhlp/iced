@@ -165,12 +165,11 @@ impl Compositor {
             ..limits
         });
 
-        // Request SHADER_F16 only if the adapter supports it (e.g., not available in WebGL2)
-        let required_features = if adapter.features().contains(wgpu::Features::SHADER_F16) {
-            wgpu::Features::SHADER_F16
-        } else {
-            wgpu::Features::empty()
-        };
+        // Request SHADER_F16 only if the adapter supports it (e.g., not available in WebGL2),
+        // and timestamp queries where available, so custom shader primitives can measure
+        // their passes on the GPU.
+        let required_features =
+            adapter.features() & (wgpu::Features::SHADER_F16 | wgpu::Features::TIMESTAMP_QUERY);
 
         let mut errors = Vec::new();
 
