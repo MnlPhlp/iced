@@ -14,7 +14,8 @@ use crate::core::renderer;
 use crate::core::shell;
 use crate::core::text;
 use crate::core::theme;
-use crate::core::time::Instant;
+use crate::core::time::{Duration, Instant};
+use crate::core::window::Pacing;
 use crate::core::{Color, InputMethod, Padding, Point, Rectangle, Size, Text, Vector};
 use crate::graphics::Compositor;
 use crate::program::{self, Program};
@@ -89,6 +90,8 @@ where
                 renderer,
                 mouse_interaction: mouse::Interaction::None,
                 redraw_at: None,
+                pacing: Pacing::default(),
+                paced_at: None,
                 preedit: None,
                 ime_state: None,
             },
@@ -188,6 +191,10 @@ where
     pub surface_timeouts: u32,
     pub renderer: P::Renderer,
     pub redraw_at: Option<Instant>,
+    /// How the window paces its redraws.
+    pub pacing: Pacing,
+    /// When the last paced redraw was due (the cadence's anchor).
+    paced_at: Option<Instant>,
     preedit: Option<Preedit<P::Renderer>>,
     ime_state: Option<(Rectangle, input_method::Purpose)>,
 }
@@ -220,6 +227,36 @@ where
             }
             RedrawRequest::Wait => {}
         }
+    }
+
+    /// Whether a redraw now waits for the compositor's frame callback.
+    pub fn waits_for_compositor(&self) -> bool {
+        self.pacing == Pacing::Compositor
+    }
+
+    /// When a redraw asked for at `now` may happen, if not now: a paced
+    /// window redraws at most once per interval, on a steady cadence (a
+    /// redraw a little late keeps the next one's time; one more than an
+    /// interval late starts the cadence again). `None` takes the redraw now.
+    pub fn paced_until(&mut self, now: Instant) -> Option<Instant> {
+        let interval = match self.pacing {
+            Pacing::Compositor | Pacing::Unlimited => return None,
+            Pacing::Limited(Some(interval)) => interval,
+            Pacing::Limited(None) => self.refresh_interval()?,
+        };
+        let due = match self.paced_at {
+            Some(last) if now < last + interval => return Some(last + interval),
+            Some(last) if now < last + interval * 2 => last + interval,
+            _ => now,
+        };
+        self.paced_at = Some(due);
+        None
+    }
+
+    /// The window's monitor's refresh interval, if it is known.
+    fn refresh_interval(&self) -> Option<Duration> {
+        let millihertz = self.raw.current_monitor()?.refresh_rate_millihertz()?;
+        (millihertz > 0).then(|| Duration::from_secs_f64(1000.0 / f64::from(millihertz)))
     }
 
     pub fn request_input_method(&mut self, input_method: InputMethod) {

@@ -757,6 +757,12 @@ async fn run_instance<P>(
                             continue;
                         }
 
+                        // A paced window's redraw that came early waits for its time.
+                        if let Some(due) = window.paced_until(Instant::now()) {
+                            window.redraw_at = Some(window.redraw_at.map_or(due, |at| at.min(due)));
+                            continue;
+                        }
+
                         // Window was resized between redraws
                         if window.surface_version != window.state.surface_version() {
                             window.renderer.hint(window.state.scale());
@@ -943,12 +949,17 @@ async fn run_instance<P>(
                         window.draw_preedit();
 
                         let present_span = debug::present(id);
+                        let waits_for_compositor = window.waits_for_compositor();
                         match current_compositor.present(
                             &mut window.renderer,
                             &mut window.surface,
                             window.state.viewport(),
                             window.state.background_color(),
-                            || window.raw.pre_present_notify(),
+                            || {
+                                if waits_for_compositor {
+                                    window.raw.pre_present_notify();
+                                }
+                            },
                         ) {
                             Ok(()) => {
                                 present_span.finish();
@@ -1574,6 +1585,12 @@ fn run_action<'a, P, C>(
             window::Action::SetLevel(id, level) => {
                 if let Some(window) = window_manager.get_mut(id) {
                     window.raw.set_window_level(conversion::window_level(level));
+                }
+            }
+            window::Action::SetPacing(id, pacing) => {
+                if let Some(window) = window_manager.get_mut(id) {
+                    window.pacing = pacing;
+                    window.raw.request_redraw();
                 }
             }
             window::Action::ShowSystemMenu(id) => {

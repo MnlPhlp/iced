@@ -1,7 +1,7 @@
 //! Build window-based GUI applications.
 use crate::core::time::Instant;
 use crate::core::window::{
-    Direction, Event, Icon, Id, Level, Mode, Screenshot, Settings, UserAttention,
+    Direction, Event, Icon, Id, Level, Mode, Pacing, Screenshot, Settings, UserAttention,
 };
 use crate::core::{Point, Size, Window};
 use crate::futures::Subscription;
@@ -114,6 +114,9 @@ pub enum Action {
 
     /// Change the window [`Level`].
     SetLevel(Id, Level),
+
+    /// Change how the window paces its redraws ([`Pacing`]).
+    SetPacing(Id, Pacing),
 
     /// Show the system menu at cursor position.
     ///
@@ -406,6 +409,11 @@ pub fn gain_focus<T>(id: Id) -> Task<T> {
 /// Changes the window [`Level`].
 pub fn set_level<T>(id: Id, level: Level) -> Task<T> {
     task::effect(crate::Action::Window(Action::SetLevel(id, level)))
+}
+
+/// Changes how the window paces its redraws ([`Pacing`]).
+pub fn set_pacing<T>(id: Id, pacing: Pacing) -> Task<T> {
+    task::effect(crate::Action::Window(Action::SetPacing(id, pacing)))
 }
 
 /// Shows the [system menu] at cursor position.

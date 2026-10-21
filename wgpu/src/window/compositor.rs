@@ -362,7 +362,10 @@ impl graphics::Compositor for Compositor {
             &wgpu::SurfaceConfiguration {
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
                 format: self.format,
-                present_mode: self.settings.present_mode,
+                present_mode: present_mode(
+                    self.settings.present_mode,
+                    &surface.get_capabilities(&self.adapter),
+                ),
                 width,
                 height,
                 alpha_mode: self.alpha_mode,
@@ -468,6 +471,27 @@ impl From<backend::Settings> for Settings {
             backends,
             power_preference: settings.power_preference,
         }
+    }
+}
+
+/// The present mode a surface is configured with: [`wgpu::PresentMode::AutoNoVsync`]
+/// (vsync off) as mailbox where the surface has it, else fifo, so frames are not held to
+/// the display's rate and the picture never tears (`ICED_PRESENT_MODE=immediate` still
+/// asks for tearing); any other mode as it is.
+fn present_mode(
+    mode: wgpu::PresentMode,
+    capabilities: &wgpu::SurfaceCapabilities,
+) -> wgpu::PresentMode {
+    match mode {
+        wgpu::PresentMode::AutoNoVsync
+            if capabilities
+                .present_modes
+                .contains(&wgpu::PresentMode::Mailbox) =>
+        {
+            wgpu::PresentMode::Mailbox
+        }
+        wgpu::PresentMode::AutoNoVsync => wgpu::PresentMode::Fifo,
+        mode => mode,
     }
 }
 
