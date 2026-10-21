@@ -14,9 +14,20 @@ static ACQUIRE_WAIT_NANOS: std::sync::atomic::AtomicU64 = std::sync::atomic::Ato
 /// How long the last [`present`] waited for the surface to hand out its
 /// texture (the swapchain's acquire): a frame blocked on the display or on
 /// frames still in flight. Custom shader primitives' `prepare` of the same
-/// frame runs after it.
+/// frame runs before it.
 pub fn last_acquire_wait() -> Duration {
     Duration::from_nanos(ACQUIRE_WAIT_NANOS.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// The surface's desired maximum frame latency (`set_frame_latency`).
+static FRAME_LATENCY: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
+/// Sets how many frames a surface configured from now on may queue ahead of
+/// the display (`desired_maximum_frame_latency`, at least 1; 1 by
+/// default). With 2 the CPU prepares the next frame while the GPU still
+/// draws this one.
+pub fn set_frame_latency(frames: u32) {
+    FRAME_LATENCY.store(frames.max(1), std::sync::atomic::Ordering::Relaxed);
 }
 
 /// A window graphics backend for iced powered by `wgpu`.
@@ -240,6 +251,10 @@ pub async fn new(
 }
 
 /// Presents the given primitives with the given [`Compositor`].
+///
+/// The primitives are prepared (uploads, custom primitives' `prepare`)
+/// before the surface texture is acquired: that work never needs the
+/// texture, and the GPU can start on it while the acquire waits.
 pub fn present(
     renderer: &mut Renderer,
     surface: &mut wgpu::Surface<'static>,
@@ -247,6 +262,8 @@ pub fn present(
     background_color: Color,
     on_pre_present: impl FnOnce(),
 ) -> Result<(), compositor::SurfaceError> {
+    let encoder = renderer.prepare_frame(viewport);
+
     let acquire = Instant::now();
     let texture = surface.get_current_texture();
     ACQUIRE_WAIT_NANOS.store(
@@ -254,33 +271,35 @@ pub fn present(
         std::sync::atomic::Ordering::Relaxed,
     );
 
-    match texture {
+    let error = match texture {
         wgpu::CurrentSurfaceTexture::Success(frame) => {
             let view = &frame
                 .texture
                 .create_view(&wgpu::TextureViewDescriptor::default());
 
-            let _submission = renderer.present(
-                Some(background_color),
-                frame.texture.format(),
-                view,
-                viewport,
-            );
+            let encoder = renderer.render_frame(encoder, Some(background_color), view, viewport);
+            let _submission = renderer.submit(encoder);
 
             // Present the frame
             on_pre_present();
             renderer.engine.queue.present(frame);
 
-            Ok(())
+            return Ok(());
         }
         wgpu::CurrentSurfaceTexture::Suboptimal(_) | wgpu::CurrentSurfaceTexture::Outdated => {
-            Err(compositor::SurfaceError::Outdated)
+            compositor::SurfaceError::Outdated
         }
-        wgpu::CurrentSurfaceTexture::Timeout => Err(compositor::SurfaceError::Timeout),
-        wgpu::CurrentSurfaceTexture::Occluded => Err(compositor::SurfaceError::Occluded),
-        wgpu::CurrentSurfaceTexture::Lost => Err(compositor::SurfaceError::Lost),
-        wgpu::CurrentSurfaceTexture::Validation => Err(compositor::SurfaceError::Other),
-    }
+        wgpu::CurrentSurfaceTexture::Timeout => compositor::SurfaceError::Timeout,
+        wgpu::CurrentSurfaceTexture::Occluded => compositor::SurfaceError::Occluded,
+        wgpu::CurrentSurfaceTexture::Lost => compositor::SurfaceError::Lost,
+        wgpu::CurrentSurfaceTexture::Validation => compositor::SurfaceError::Other,
+    };
+
+    // No texture: what was prepared still goes to the GPU, so the staged
+    // uploads keep their submit.
+    let _submission = renderer.submit(encoder);
+
+    Err(error)
 }
 
 impl graphics::Compositor for Compositor {
@@ -348,7 +367,8 @@ impl graphics::Compositor for Compositor {
                 height,
                 alpha_mode: self.alpha_mode,
                 view_formats: vec![],
-                desired_maximum_frame_latency: 1,
+                desired_maximum_frame_latency: FRAME_LATENCY
+                    .load(std::sync::atomic::Ordering::Relaxed),
                 color_space: wgpu::SurfaceColorSpace::Auto,
             },
         );

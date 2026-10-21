@@ -132,6 +132,16 @@ impl Renderer {
         target: &wgpu::TextureView,
         viewport: &Viewport,
     ) -> wgpu::CommandEncoder {
+        let encoder = self.prepare_frame(viewport);
+
+        self.render_frame(encoder, clear_color, target, viewport)
+    }
+
+    /// The first half of [`draw`](Self::draw): uploads the current
+    /// primitives and runs the custom primitives' `prepare`, none of which
+    /// needs the target. A window can do this before it waits for its
+    /// surface texture.
+    pub fn prepare_frame(&mut self, viewport: &Viewport) -> wgpu::CommandEncoder {
         let mut encoder =
             self.engine
                 .device
@@ -140,6 +150,19 @@ impl Renderer {
                 });
 
         self.prepare(&mut encoder, viewport);
+
+        encoder
+    }
+
+    /// The second half of [`draw`](Self::draw): records the primitives
+    /// prepared by [`prepare_frame`](Self::prepare_frame) into `target`.
+    pub fn render_frame(
+        &mut self,
+        mut encoder: wgpu::CommandEncoder,
+        clear_color: Option<Color>,
+        target: &wgpu::TextureView,
+        viewport: &Viewport,
+    ) -> wgpu::CommandEncoder {
         self.render(&mut encoder, target, clear_color, viewport);
 
         self.quad.trim();
@@ -167,6 +190,12 @@ impl Renderer {
     ) -> wgpu::SubmissionIndex {
         let encoder = self.draw(clear_color, frame, viewport);
 
+        self.submit(encoder)
+    }
+
+    /// Submits an encoder from [`draw`](Self::draw) or
+    /// [`render_frame`](Self::render_frame) with the staged uploads.
+    pub fn submit(&mut self, encoder: wgpu::CommandEncoder) -> wgpu::SubmissionIndex {
         self.staging_belt.finish();
         let submission = self.engine.queue.submit([encoder.finish()]);
         self.staging_belt.recall();
