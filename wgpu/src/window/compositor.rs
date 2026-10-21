@@ -2,10 +2,22 @@
 use crate::core::Color;
 use crate::core::backend;
 use crate::core::renderer;
+use crate::core::time::{Duration, Instant};
 use crate::graphics::color;
 use crate::graphics::compositor;
 use crate::graphics::{self, Antialiasing, Shell, Viewport};
 use crate::{Engine, Renderer};
+
+/// Nanoseconds the last [`present`] waited for its surface texture.
+static ACQUIRE_WAIT_NANOS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How long the last [`present`] waited for the surface to hand out its
+/// texture (the swapchain's acquire): a frame blocked on the display or on
+/// frames still in flight. Custom shader primitives' `prepare` of the same
+/// frame runs after it.
+pub fn last_acquire_wait() -> Duration {
+    Duration::from_nanos(ACQUIRE_WAIT_NANOS.load(std::sync::atomic::Ordering::Relaxed))
+}
 
 /// A window graphics backend for iced powered by `wgpu`.
 pub struct Compositor {
@@ -166,10 +178,12 @@ impl Compositor {
         });
 
         // Request SHADER_F16 only if the adapter supports it (e.g., not available in WebGL2),
-        // and timestamp queries where available, so custom shader primitives can measure
-        // their passes on the GPU.
-        let required_features =
-            adapter.features() & (wgpu::Features::SHADER_F16 | wgpu::Features::TIMESTAMP_QUERY);
+        // and timestamp queries where available (also inside passes), so custom shader
+        // primitives can measure their passes on the GPU.
+        let required_features = adapter.features()
+            & (wgpu::Features::SHADER_F16
+                | wgpu::Features::TIMESTAMP_QUERY
+                | wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES);
 
         let mut errors = Vec::new();
 
@@ -233,7 +247,14 @@ pub fn present(
     background_color: Color,
     on_pre_present: impl FnOnce(),
 ) -> Result<(), compositor::SurfaceError> {
-    match surface.get_current_texture() {
+    let acquire = Instant::now();
+    let texture = surface.get_current_texture();
+    ACQUIRE_WAIT_NANOS.store(
+        u64::try_from(acquire.elapsed().as_nanos()).unwrap_or(u64::MAX),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+
+    match texture {
         wgpu::CurrentSurfaceTexture::Success(frame) => {
             let view = &frame
                 .texture
